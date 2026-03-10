@@ -1,0 +1,130 @@
+## Ref:
+## - https://gitlab.com/gitlab-ci-utils/gitlab-ci-templates/-/blob/main/collections/Go-Build-Test-Deploy.gitlab-ci.yml
+## - https://aarongoldenthal.com/posts/gitlab-ci-pipeline-for-go-projects/
+
+spec:
+  inputs:
+    cache-key:
+      default: ${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}
+    go-report-dir:
+      description: Report directory
+      default: _reports
+---
+
+variables:
+  GOPATH: $CI_PROJECT_DIR/.go
+  GO_REPORTS_DIR: $[[ inputs.go-report-dir ]]
+
+include:
+  - local: '/ci/templates/Go-Template.gitlab-ci.yml'
+
+.go-test-rules:
+  test-disabled:
+    - if: $GO_TEST_DISABLED == 'true' || $GO_TEST_DISABLED == '1'
+      when: never
+
+go-test:
+  stage: test
+  extends: .go
+  needs:
+    - job: go-mod-download
+      optional: true
+  script:
+    - echo "$CI_JOB_NAME is used for configuration only, and its script should not be executed"
+    - exit 1
+  cache:
+    key: $[[ inputs.cache-key ]]
+    paths:
+      - .go/pkg/mod/
+    policy: pull
+  allow_failure: true
+  rules:
+    - when: never
+
+go-test-cover:
+  extends: go-test
+  dependencies: []
+  script:
+    - '[[ -f .env.template ]] && cp .env.template .env'
+    - go test -v -coverprofile=gl-go-coverage.out $(go list ./... | grep -v /vendor/)
+    - go tool cover -func=gl-go-coverage.out
+  rules:
+    - if: $GO_TEST_DISABLED == 'true' || $GO_TEST_DISABLED == '1'
+      when: never
+    - if: $GO_TEST_EXCLUDED =~ /cover/
+      when: never
+    - when: always
+  artifacts:
+    paths:
+      - gl-go-coverage.out
+
+go-fmt:
+  extends: go-test
+  dependencies: []
+  script:
+    - gofmt -d $(go list ./... | grep -v /vendor/) 2> gl-go-fmt.out
+    # - go fmt $(go list ./... | grep -v /vendor/)
+  rules:
+    - if: $GO_TEST_DISABLED == 'true' || $GO_TEST_DISABLED == '1'
+      when: never
+    - if: $GO_TEST_EXCLUDED =~ /fmt/
+      when: never
+    - when: never
+
+go-test-reports:
+  extends: go-test
+  script:
+    - '[[ ! -d "$GO_REPORTS_DIR" ]] && mkdir -p ${GO_REPORTS_DIR}'
+    # - go test -v -json `go list ./... | grep -v /vendor/` > reports/go-test.native.json
+    - go test -v -coverprofile=${GO_REPORTS_DIR}/gl-go-coverage.out `go list ./... | grep -v /vendor/`
+  rules:
+    - if: $GO_TEST_DISABLED == 'true' || $GO_TEST_DISABLED == '1'
+      when: never
+    - if: $GO_TEST_EXCLUDED =~ /report/
+      when: never
+    - when: never
+  artifacts:
+    paths:
+      - ${GO_REPORTS_DIR}/
+      - gl-go-coverage.out
+    expire_in: 1 hour
+
+go-vet:
+  extends: go-test
+  script:
+    - go vet $(go list ./... | grep -v /vendor/) 2> gl-go-vet.out || true
+  rules:
+    - if: $GO_TEST_DISABLED == 'true' || $GO_TEST_DISABLED == '1'
+      when: never
+    - if: $GO_TEST_EXCLUDED =~ /vet/
+      when: never
+    - when: always
+  allow_failure: true
+  artifacts:
+    paths:
+      - gl-go-vet.out
+
+go-test-race:
+  extends: go-test
+  variables:
+    # Cgo is required for -race.
+    CGO_ENABLED: 1
+  script:
+    - go test -race $(go list ./... | grep -v /vendor/)
+  rules:
+    - if: $GO_TEST_DISABLED == 'true' || $GO_TEST_DISABLED == '1'
+      when: never
+    - if: $GO_TEST_EXCLUDED =~ /race/
+      when: never
+    - when: never
+
+go-test-msan:
+  extends: go-test
+  script:
+    - go test -msan -short $(go list ./... | grep -v /vendor/)
+  rules:
+    - if: $GO_TEST_DISABLED == 'true' || $GO_TEST_DISABLED == '1'
+      when: never
+    - if: $GO_TEST_EXCLUDED =~ /msan/
+      when: never
+    - when: never

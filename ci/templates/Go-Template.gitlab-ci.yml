@@ -1,0 +1,57 @@
+# Templates for Go jobs.
+spec:
+  inputs:
+    go-image:
+      type: string
+      default: ''
+    go-version:
+      type: string
+      default: '1.25'
+    image-registry:
+      type: string
+      default: public.ecr.aws/docker/library/
+---
+
+# Template for all Go jobs setting image and GOPATH for dependency artifacts.
+variables:
+  GOLANG_IMAGE: $[[ inputs.image-registry ]]golang:${GOLANG_VERSION}
+  GOLANG_VERSION: $[[ inputs.go-version ]]
+
+.go:
+  image:
+    name: "$GOLANG_IMAGE"
+  variables:
+    GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
+    GOPATH: $CI_PROJECT_DIR/.go
+    GOMODCACHE: "$GOPATH/pkg/mod"
+    GO_BIN_DIR: bin
+
+# Uses the go-test image with dependencies for `-race` and coverage report processing.
+.go_test:
+  extends:
+    - .go
+  image: $GO_TEST_IMAGE
+  variables:
+    GO_TEST_IMAGE: registry.gitlab.com/gitlab-ci-utils/container-images/go-test:2.8.3@sha256:7815eedb54b17baeaedcfc00dc8d74ff029f2898afbd0408bfc008efc43e7258
+  artifacts:
+    when: always
+
+# Coverage-related settings to simplify overriding
+.go_test_coverage:
+  after_script:
+    # Generate Cobertura coverage report for GitLab
+    - gocover-cobertura -by-files < coverage.out > coverage.xml
+    # Generate HTML coverage report
+    - go tool cover -html coverage.out -o coverage.html
+    # Generate JUnit report for GitLab
+    - go-junit-report < tests.txt > junit.xml
+  coverage: '/total:\s+\(statements\)\s+\d+.\d+%/'
+  artifacts:
+    expose_as: 'Go Test Coverage Report'
+    paths:
+      - coverage.html
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+      junit: junit.xml

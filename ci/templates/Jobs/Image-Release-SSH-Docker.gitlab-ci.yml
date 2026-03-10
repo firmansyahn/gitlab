@@ -1,0 +1,88 @@
+## Notes: alpine:3.22 with Openssh 10 causes break
+spec:
+  inputs:
+    chart-branch:
+      default: ''
+    job-name:
+      description: Define job's name
+      default: image-release
+    job-stage:
+      description: Define job's stage
+      default: deploy
+    project-id:
+      default: ${CI_PROJECT_ID}
+    ssh-port:
+      default: 17222
+    strategy:
+      default: depend
+---
+
+.image-release-ssh-vars:
+  variables:
+    APP_SSH_HOSTNAME: $SSH_DOMAIN_DEV
+    APP_SSH_PORT: $[[ inputs.ssh-port ]]
+    APP_SSH_PRIVATE_KEY: $SSH_PRIVATE_KEY_DEV
+    APP_SSH_USERNAME: $SSH_USER_DEV
+    REMOVE_PREV_IMAGES: "true"
+    DOCKER_RUN_ARGS: ""
+
+dev:image-release:
+  stage: deploy
+  image: alpine:3.21
+  environment:
+    name: $APP_ENVIRONMENT_NAME
+    deployment_tier: development
+    # on_stop: stop-image-release
+  needs: 
+    - job: image-build-push
+  variables: !reference [.image-release-ssh-vars, variables]
+  before_script:
+    - "command -v ssh-agent >/dev/null || ( apk add --update openssh )"
+    - eval $(ssh-agent -s)
+    - echo "$APP_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - "[[ ! -d ~/.ssh ]] && { mkdir -p ~/.ssh; chmod 700 ~/.ssh; }"
+    - |
+      echo "Host dev-host
+        StrictHostKeyChecking yes
+        HostName $APP_SSH_HOSTNAME
+        Port $APP_SSH_PORT
+        User $APP_SSH_USERNAME
+      " > ~/.ssh/config
+    - ssh-keyscan -p $APP_SSH_PORT -t rsa,ed25519 $APP_SSH_HOSTNAME >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - |
+      ssh dev-host "
+        echo ${CI_REGISTRY_PASSWORD} | docker login ${APP_IMAGE_REGISTRY} -u ${CI_REGISTRY_USER} --password-stdin
+        docker image pull ${APP_REGISTRY_IMAGE}:${APP_IMAGE_TAG}
+        (docker stop ${APP_CONTAINER_NAME} || true)
+        (docker rm ${APP_CONTAINER_NAME} || true)
+        docker run -d \
+          --add-host host.docker.internal:host-gateway \
+          --name ${APP_CONTAINER_NAME} \
+          --publish ${APP_NODEPORT}:${APP_IMAGE_PORT} \
+          --restart unless-stopped \
+          --tmpfs /data:noexec,noatime,nodiratime \
+          ${DOCKER_RUN_ARGS} \
+          ${APP_REGISTRY_IMAGE}:${APP_IMAGE_TAG}
+        sleep 5
+        docker ps -a --filter name=${APP_CONTAINER_NAME}
+        docker logs ${APP_CONTAINER_NAME}
+        for dockerImage in \$(docker images --format \"{{.ID}} {{.Repository}}:{{.Tag}}\" \
+                    --filter reference=${APP_REGISTRY_IMAGE} \
+                    | grep -v \$(docker ps --format {{.Image}} --filter name=${APP_CONTAINER_NAME}) \
+                    | awk '{print \$1}')
+        do
+          echo \"> Unused image id: \$dockerImage\"
+
+          if [[ "$REMOVE_PREV_IMAGES" =~ true ]]; then
+            echo \"> Remove unused image id: \$dockerImage\"
+            docker image remove \$dockerImage
+          fi
+        done
+        docker logout
+      "
+  rules:
+    - if: $CI_COMMIT_REF_NAME =~ $APP_REF_INTEG
+      when: never
+    - if: $APP_DEPLOYMENT_TIER =~ /development/

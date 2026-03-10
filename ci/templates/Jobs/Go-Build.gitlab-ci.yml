@@ -1,0 +1,62 @@
+spec:
+  inputs:
+    arch:
+      default: amd64
+    build-dir:
+      default: _build
+    cache-key:
+      default: ${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}
+    go-version:
+      type: string
+      default: "1.25"
+    job-name:
+      description: Define job's name
+      default: go-build
+    job-stage:
+      description: Define job's stage
+      default: build
+---
+
+variables:
+  GO_BUILD_ARGS: '-v'
+  GO_BUILD_DIR: $[[ inputs.build-dir ]]
+
+include:
+  - remote: '/ci/templates/Go-Template.gitlab-ci.yml'
+
+"$[[ inputs.job-name ]]":
+  stage: $[[ inputs.job-stage ]]
+  extends:
+    - .go
+  image:
+    name: $GOLANG_IMAGE
+  needs:
+    - job: go-mod-download
+      optional: true
+  variables:
+    CGO_ENABLED: 0
+  script:
+    - |
+      echo "go build args: $GO_BUILD_ARGS"
+      echo "go build dir: $GO_BUILD_DIR"
+    - mkdir -p ${GO_BUILD_DIR}
+    - '[[ ! -d .go/pkg/mod ]] && go mod tidy'
+    - GOOS=linux GOARCH=$[[ inputs.arch ]] go build $GO_BUILD_ARGS -o ${GO_BUILD_DIR} ./...
+  artifacts:
+    name: build
+    paths:
+      - ${GO_BUILD_DIR}
+    expire_in: 1 hour
+  cache:
+    key: $[[ inputs.cache-key ]]
+    paths:
+      - .go/pkg/mod/
+      - .cache/go-build/
+    policy: pull
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+      when: never
+    ## Always 'true' if any open MR available
+    # - if: $CI_OPEN_MERGE_REQUESTS
+    #   when: never
+    - when: always
